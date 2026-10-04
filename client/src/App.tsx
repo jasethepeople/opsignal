@@ -137,11 +137,12 @@ function Workspace({ user, onLogout }: { user: { name?: string | null; email?: s
   const [mobileMenu, setMobileMenu] = useState(false);
   const dashboardQuery = trpc.opsignal.dashboard.useQuery(undefined, { retry: 1, refetchOnWindowFocus: false });
   const utils = trpc.useUtils();
-  const signalMutation = trpc.opsignal.updateSignal.useMutation({ onSuccess: () => utils.opsignal.dashboard.invalidate() });
-  const actionMutation = trpc.opsignal.updateAction.useMutation({ onSuccess: () => utils.opsignal.dashboard.invalidate() });
-  const createActionMutation = trpc.opsignal.createAction.useMutation({ onSuccess: () => { utils.opsignal.dashboard.invalidate(); toast.success("Action added to the queue"); } });
-  const createPlaybookMutation = trpc.opsignal.createPlaybook.useMutation({ onSuccess: () => { utils.opsignal.dashboard.invalidate(); toast.success("Playbook saved as a draft"); } });
-  const playbookMutation = trpc.opsignal.updatePlaybook.useMutation({ onSuccess: () => utils.opsignal.dashboard.invalidate() });
+  const showMutationError = (error: { message: string }) => toast.error(error.message || "That change could not be saved. Try again.");
+  const signalMutation = trpc.opsignal.updateSignal.useMutation({ onSuccess: () => utils.opsignal.dashboard.invalidate(), onError: showMutationError });
+  const actionMutation = trpc.opsignal.updateAction.useMutation({ onSuccess: () => utils.opsignal.dashboard.invalidate(), onError: showMutationError });
+  const createActionMutation = trpc.opsignal.createAction.useMutation({ onSuccess: () => { utils.opsignal.dashboard.invalidate(); toast.success("Action added to the queue"); }, onError: showMutationError });
+  const createPlaybookMutation = trpc.opsignal.createPlaybook.useMutation({ onSuccess: () => { utils.opsignal.dashboard.invalidate(); toast.success("Playbook saved as a draft"); }, onError: showMutationError });
+  const playbookMutation = trpc.opsignal.updatePlaybook.useMutation({ onSuccess: () => utils.opsignal.dashboard.invalidate(), onError: showMutationError });
   const dashboard = dashboardQuery.data as Dashboard | undefined;
   const displayName = user.name?.split(" ")[0] || "Operator";
 

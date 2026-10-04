@@ -117,11 +117,52 @@ const seedSignals = [
   },
 ];
 
+async function repairWorkspaceData(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, workspaceId: number, actorName: string, actorEmail?: string | null) {
+  const [memberRows, signalRows, integrationRows, playbookRows, auditRows] = await Promise.all([
+    db.select({ id: teamMembers.id }).from(teamMembers).where(eq(teamMembers.workspaceId, workspaceId)).limit(1),
+    db.select({ id: signals.id }).from(signals).where(eq(signals.workspaceId, workspaceId)).limit(1),
+    db.select({ id: integrations.id }).from(integrations).where(eq(integrations.workspaceId, workspaceId)).limit(1),
+    db.select({ id: playbooks.id }).from(playbooks).where(eq(playbooks.workspaceId, workspaceId)).limit(1),
+    db.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.workspaceId, workspaceId)).limit(1),
+  ]);
+
+  if (!memberRows.length) {
+    await db.insert(teamMembers).values([
+      { workspaceId, name: actorName || "You", email: actorEmail ?? null, role: "Operations lead", scope: "Workspace ownership", avatarColor: "#9be5cb" },
+      { workspaceId, name: "Maya Chen", email: "maya@northstar.example", role: "Customer success", scope: "Onboarding + retention", avatarColor: "#f6c98d" },
+      { workspaceId, name: "Jordan Bell", email: "jordan@northstar.example", role: "Revenue operations", scope: "Pipeline + billing", avatarColor: "#c4b5fd" },
+      { workspaceId, name: "Ari Williams", email: "ari@northstar.example", role: "Product", scope: "Activation + experiments", avatarColor: "#f4a7b9" },
+    ]);
+  }
+  if (!signalRows.length) await db.insert(signals).values(seedSignals.map(signal => ({ workspaceId, ...signal })));
+  if (!integrationRows.length) {
+    await db.insert(integrations).values([
+      { workspaceId, name: "PostHog", category: "Product analytics", status: "connected" as const, description: "Activation, funnel and behavior signals", lastSyncAt: new Date(Date.now() - 1000 * 60 * 6), recordsSynced: 18420 },
+      { workspaceId, name: "Stripe", category: "Billing", status: "attention" as const, description: "Payments, invoices and entitlement changes", lastSyncAt: new Date(Date.now() - 1000 * 60 * 27), recordsSynced: 3481 },
+      { workspaceId, name: "Calendly", category: "Scheduling", status: "connected" as const, description: "Meetings, handoffs and no-show risk", lastSyncAt: new Date(Date.now() - 1000 * 60 * 13), recordsSynced: 928 },
+      { workspaceId, name: "Apollo", category: "Revenue", status: "available" as const, description: "Prospects, accounts and buying signals", lastSyncAt: null, recordsSynced: 0 },
+      { workspaceId, name: "Linear", category: "Delivery", status: "available" as const, description: "Issues, projects and engineering ownership", lastSyncAt: null, recordsSynced: 0 },
+      { workspaceId, name: "Jotform", category: "Intake", status: "available" as const, description: "Operational requests and structured intake", lastSyncAt: null, recordsSynced: 0 },
+    ]);
+  }
+  if (!playbookRows.length) {
+    await db.insert(playbooks).values([
+      { workspaceId, name: "Payment friction response", trigger: "Checkout conversion falls >10% week over week", ownerName: "Ari Williams", priority: "critical" as const, nextStep: "Inspect the payment funnel and open a contained incident within 30 minutes.", status: "active" as const },
+      { workspaceId, name: "Enterprise handoff", trigger: "A strategic account books an onboarding call", ownerName: "Maya Chen", priority: "high" as const, nextStep: "Create a one-page account brief and confirm the success owner before the call.", status: "active" as const },
+      { workspaceId, name: "Stale action sweep", trigger: "An action is overdue by more than 48 hours", ownerName: actorName || "You", priority: "medium" as const, nextStep: "Reassign, rescope, or close the action and capture the reason.", status: "draft" as const },
+    ]);
+  }
+  if (!auditRows.length) await addAudit(db, workspaceId, actorName || "System", "repaired workspace bootstrap", "workspace", workspaceId, "Restored missing starter context without changing existing actions.");
+}
+
 async function ensureWorkspace(userId: number, actorName: string, actorEmail?: string | null) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   const existing = await db.select().from(workspaces).where(eq(workspaces.ownerId, userId)).limit(1);
-  if (existing[0]) return existing[0];
+  if (existing[0]) {
+    await repairWorkspaceData(db, existing[0].id, actorName, actorEmail);
+    return existing[0];
+  }
 
   const workspaceResult = await db.insert(workspaces).values({
     ownerId: userId,
