@@ -3,10 +3,12 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   actions,
   auditEvents,
+  billingHistory,
   integrations,
   InsertUser,
   playbooks,
   signals,
+  subscriptions,
   teamMembers,
   users,
   workspaces,
@@ -67,6 +69,13 @@ export async function getUserByOpenId(openId: string) {
 
 async function addAudit(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, workspaceId: number, actorName: string, action: string, entityType: string, entityId: number | null, context: string) {
   await db.insert(auditEvents).values({ workspaceId, actorName, action, entityType, entityId, context });
+}
+
+async function ensureSubscription(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, workspaceId: number) {
+  const existing = await db.select().from(subscriptions).where(eq(subscriptions.workspaceId, workspaceId)).limit(1);
+  if (existing[0]) return existing[0];
+  await db.insert(subscriptions).values({ workspaceId, plan: "free", status: "active" });
+  return (await db.select().from(subscriptions).where(eq(subscriptions.workspaceId, workspaceId)).limit(1))[0];
 }
 
 const seedSignals = [
@@ -161,6 +170,7 @@ async function ensureWorkspace(userId: number, actorName: string, actorEmail?: s
   const existing = await db.select().from(workspaces).where(eq(workspaces.ownerId, userId)).limit(1);
   if (existing[0]) {
     await repairWorkspaceData(db, existing[0].id, actorName, actorEmail);
+    await ensureSubscription(db, existing[0].id);
     return existing[0];
   }
 
@@ -171,6 +181,7 @@ async function ensureWorkspace(userId: number, actorName: string, actorEmail?: s
     timezone: "America/Denver",
   });
   const workspaceId = Number((workspaceResult as unknown as { insertId: number }).insertId);
+  await ensureSubscription(db, workspaceId);
   await db.insert(teamMembers).values([
     { workspaceId, name: actorName || "You", email: actorEmail ?? null, role: "Operations lead", scope: "Workspace ownership", avatarColor: "#9be5cb" },
     { workspaceId, name: "Maya Chen", email: "maya@northstar.example", role: "Customer success", scope: "Onboarding + retention", avatarColor: "#f6c98d" },
@@ -207,13 +218,15 @@ export async function getDashboard(userId: number, actorName: string, actorEmail
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   const workspace = await ensureWorkspace(userId, actorName, actorEmail);
-  const [signalRows, actionRows, integrationRows, playbookRows, memberRows, auditRows] = await Promise.all([
+  const [signalRows, actionRows, integrationRows, playbookRows, memberRows, auditRows, subscription, billingRows] = await Promise.all([
     db.select().from(signals).where(eq(signals.workspaceId, workspace.id)).orderBy(desc(signals.occurredAt)),
     db.select().from(actions).where(eq(actions.workspaceId, workspace.id)).orderBy(desc(actions.createdAt)),
     db.select().from(integrations).where(eq(integrations.workspaceId, workspace.id)).orderBy(desc(integrations.updatedAt)),
     db.select().from(playbooks).where(eq(playbooks.workspaceId, workspace.id)).orderBy(desc(playbooks.updatedAt)),
     db.select().from(teamMembers).where(eq(teamMembers.workspaceId, workspace.id)).orderBy(teamMembers.name),
     db.select().from(auditEvents).where(eq(auditEvents.workspaceId, workspace.id)).orderBy(desc(auditEvents.createdAt)).limit(12),
+    ensureSubscription(db, workspace.id),
+    db.select().from(billingHistory).where(eq(billingHistory.workspaceId, workspace.id)).orderBy(desc(billingHistory.createdAt)).limit(12),
   ]);
   const openActions = actionRows.filter(item => item.status === "open" || item.status === "in_progress");
   const urgentSignals = signalRows.filter(item => item.severity === "critical" || item.severity === "high").filter(item => item.status !== "closed");
@@ -234,6 +247,13 @@ export async function getDashboard(userId: number, actorName: string, actorEmail
       connectedIntegrations: connected,
       totalIntegrations: integrationRows.length,
       signalVolume: signalRows.length,
+    },
+    billing: {
+      plan: subscription?.plan ?? "free",
+      status: subscription?.status ?? "active",
+      currentPeriodEnd: subscription?.currentPeriodEnd ?? null,
+      cancelAtPeriodEnd: Boolean(subscription?.cancelAtPeriodEnd),
+      history: billingRows,
     },
   };
 }
@@ -288,5 +308,55 @@ export async function updatePlaybookStatus(userId: number, actorName: string, pl
   if (!playbook[0]) throw new Error("Playbook not found");
   await db.update(playbooks).set({ status }).where(eq(playbooks.id, playbookId));
   await addAudit(db, workspace.id, actorName, `marked playbook ${status}`, "playbook", playbookId, playbook[0].name);
+  return { ok: true };
+}
+
+export async function createSignal(userId: number, actorName: string, input: { title: string; source: string; sourceType: string; severity: "low" | "medium" | "high" | "critical"; summary: string; impact: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const workspace = await ensureWorkspace(userId, actorName);
+  const result = await db.insert(signals).values({ workspaceId: workspace.id, ...input, status: "new" as const });
+  const signalId = Number((result as unknown as { insertId: number }).insertId);
+  await addAudit(db, workspace.id, actorName, "captured signal", "signal", signalId, input.title);
+  return { ok: true, id: signalId };
+}
+
+export async function createIntegration(userId: number, actorName: string, input: { name: string; category: string; description: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const workspace = await ensureWorkspace(userId, actorName);
+  const result = await db.insert(integrations).values({ workspaceId: workspace.id, ...input, status: "attention" as const, recordsSynced: 0, lastSyncAt: null });
+  const integrationId = Number((result as unknown as { insertId: number }).insertId);
+  await addAudit(db, workspace.id, actorName, "added integration", "integration", integrationId, `${input.name} · setup required`);
+  return { ok: true, id: integrationId };
+}
+
+export async function updateIntegrationStatus(userId: number, actorName: string, integrationId: number, status: "attention" | "available") {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const workspace = await ensureWorkspace(userId, actorName);
+  const integration = await db.select().from(integrations).where(and(eq(integrations.id, integrationId), eq(integrations.workspaceId, workspace.id))).limit(1);
+  if (!integration[0]) throw new Error("Integration not found");
+  await db.update(integrations).set({ status, lastSyncAt: null }).where(eq(integrations.id, integrationId));
+  await addAudit(db, workspace.id, actorName, status === "attention" ? "started integration setup" : "paused integration", "integration", integrationId, integration[0].name);
+  return { ok: true };
+}
+
+export async function createTeamMember(userId: number, actorName: string, input: { name: string; email: string; role: string; scope: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const workspace = await ensureWorkspace(userId, actorName);
+  const result = await db.insert(teamMembers).values({ workspaceId: workspace.id, ...input, avatarColor: "#c4b5fd" });
+  const memberId = Number((result as unknown as { insertId: number }).insertId);
+  await addAudit(db, workspace.id, actorName, "invited team member", "team_member", memberId, `${input.name} · ${input.email}`);
+  return { ok: true, id: memberId };
+}
+
+export async function updateWorkspaceSettings(userId: number, actorName: string, input: { name: string; timezone: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const workspace = await ensureWorkspace(userId, actorName);
+  await db.update(workspaces).set({ name: input.name, timezone: input.timezone }).where(eq(workspaces.id, workspace.id));
+  await addAudit(db, workspace.id, actorName, "updated workspace settings", "workspace", workspace.id, `${input.name} · ${input.timezone}`);
   return { ok: true };
 }

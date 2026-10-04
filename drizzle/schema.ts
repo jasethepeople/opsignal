@@ -101,6 +101,40 @@ export const auditEvents = mysqlTable("auditEvents", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const subscriptions = mysqlTable("subscriptions", {
+  id: int("id").autoincrement().primaryKey(),
+  workspaceId: int("workspaceId").notNull().unique(),
+  plan: mysqlEnum("plan", ["free", "pro", "team"]).default("free").notNull(),
+  status: mysqlEnum("status", ["active", "trialing", "past_due", "canceled"]).default("active").notNull(),
+  stripeCustomerId: varchar("stripeCustomerId", { length: 120 }),
+  stripeSubscriptionId: varchar("stripeSubscriptionId", { length: 120 }),
+  currentPeriodEnd: timestamp("currentPeriodEnd"),
+  cancelAtPeriodEnd: int("cancelAtPeriodEnd").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const billingHistory = mysqlTable("billingHistory", {
+  id: int("id").autoincrement().primaryKey(),
+  workspaceId: int("workspaceId").notNull(),
+  kind: varchar("kind", { length: 80 }).notNull(),
+  plan: mysqlEnum("plan", ["free", "pro", "team"]).notNull(),
+  amount: int("amount").default(0).notNull(),
+  currency: varchar("currency", { length: 8 }).default("usd").notNull(),
+  status: mysqlEnum("status", ["pending", "paid", "failed", "canceled"]).default("pending").notNull(),
+  stripeCheckoutSessionId: varchar("stripeCheckoutSessionId", { length: 120 }),
+  stripeInvoiceId: varchar("stripeInvoiceId", { length: 120 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const stripeEvents = mysqlTable("stripeEvents", {
+  id: int("id").autoincrement().primaryKey(),
+  eventId: varchar("eventId", { length: 160 }).notNull().unique(),
+  eventType: varchar("eventType", { length: 120 }).notNull(),
+  workspaceId: int("workspaceId"),
+  processedAt: timestamp("processedAt").defaultNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type Signal = typeof signals.$inferSelect;
@@ -109,3 +143,5 @@ export type Integration = typeof integrations.$inferSelect;
 export type Playbook = typeof playbooks.$inferSelect;
 export type TeamMember = typeof teamMembers.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
+export type Subscription = typeof subscriptions.$inferSelect;
+export type BillingHistory = typeof billingHistory.$inferSelect;

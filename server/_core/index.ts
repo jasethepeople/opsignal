@@ -7,10 +7,20 @@ import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { handleStripeWebhook } from "../billing";
 
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+    try {
+      await handleStripeWebhook(req.body as Buffer, req.header("stripe-signature"));
+      res.json({ received: true });
+    } catch (error) {
+      console.error("[Stripe webhook]", error);
+      res.status(400).json({ error: error instanceof Error ? error.message : "Webhook rejected" });
+    }
+  });
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));

@@ -15,6 +15,13 @@
       "when": 1791103196376,
       "tag": "0001_ordinary_revanche",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1791106809908,
+      "tag": "0002_careless_sentinel",
+      "breakpoints": true
     }
   ]
 }
